@@ -1,0 +1,234 @@
+"""
+Reports Router — PDF Health Assessment Report Generator using MongoDB.
+"""
+
+import os
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from bson import ObjectId
+
+from app.config import settings
+from app.database.mongodb import get_mongodb
+from app.auth.deps import get_current_user
+
+router = APIRouter()
+
+
+class ReportGenerateRequest(BaseModel):
+    assessment_id: str
+
+
+def generate_pdf_file(assessment: dict, predictions: list, user: dict, file_path: str):
+    """
+    Generates PDF report using ReportLab or fallback plain-text document.
+    """
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+    try:
+        from reportlab.lib.pagesizes import letter
+        from reportlab.lib import colors
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+
+        doc = SimpleDocTemplate(file_path, pagesize=letter)
+        styles = getSampleStyleSheet()
+        story = []
+
+        title_style = ParagraphStyle(
+            'DocTitle',
+            parent=styles['Heading1'],
+            fontSize=20,
+            textColor=colors.HexColor('#2563eb'),
+            spaceAfter=12
+        )
+        sub_style = ParagraphStyle(
+            'SubTitle',
+            parent=styles['Normal'],
+            fontSize=10,
+            textColor=colors.HexColor('#64748b'),
+            spaceAfter=20
+        )
+
+        patient_name = user.get("full_name") or user.get("name", "Patient")
+        story.append(Paragraph("AI Medical Symptom Assistant Report", title_style))
+        story.append(Paragraph(
+            f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Patient: {patient_name}",
+            sub_style
+        ))
+        story.append(Spacer(1, 10))
+
+        # Patient Info Table
+        patient_data = [
+            ["Patient Name", patient_name, "Email", user.get("email", "N/A")],
+            ["Age", str(user.get("age") or "N/A"), "Gender", str(user.get("gender") or "N/A").title()],
+            ["Duration", str(assessment.get("duration") or "N/A"), "Severity", str(assessment.get("severity") or "N/A").title()]
+        ]
+        t = Table(patient_data, colWidths=[110, 150, 110, 150])
+        t.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f8fafc')),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#e2e8f0')),
+            ('FONTNAME', (0,0), (-1,-1), 'Helvetica-Bold'),
+            ('TEXTCOLOR', (0,0), (-1,-1), colors.HexColor('#1e293b')),
+            ('FONTSIZE', (0,0), (-1,-1), 9),
+            ('PADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(t)
+        story.append(Spacer(1, 15))
+
+        # Symptoms
+        symptom_list = assessment.get("symptoms", [])
+        s_text = ", ".join(symptom_list) if symptom_list else (assessment.get("raw_symptoms_text") or "N/A")
+        story.append(Paragraph("<b>Reported Symptoms &amp; Notes:</b>", styles['Heading3']))
+        story.append(Paragraph(s_text, styles['Normal']))
+        story.append(Spacer(1, 15))
+
+        # Emergency status
+        if assessment.get("is_emergency"):
+            e_style = ParagraphStyle('Emerg', parent=styles['Normal'], textColor=colors.HexColor('#dc2626'), fontSize=11)
+            story.append(Paragraph("🚨 <b>EMERGENCY WARNING: Urgent medical evaluation is recommended!</b>", e_style))
+            story.append(Spacer(1, 15))
+
+        # Predictions Table
+        story.append(Paragraph("<b>ML Disease Prediction Results:</b>", styles['Heading3']))
+        pred_table_data = [["Rank", "Possible Condition", "Confidence Score"]]
+        for idx, p in enumerate(predictions):
+            if isinstance(p, dict):
+                disease = p.get("disease", "Unknown")
+                prob = p.get("probability", 0)
+                rank = p.get("rank", idx + 1)
+            else:
+                disease = str(p)
+                prob = 0
+                rank = idx + 1
+            pred_table_data.append([f"#{rank}", disease, f"{round(float(prob) * 100, 1)}%"])
+
+        pt = Table(pred_table_data, colWidths=[60, 300, 160])
+        pt.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#2563eb')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'LEFT'),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.HexColor('#cbd5e1')),
+            ('PADDING', (0,0), (-1,-1), 6),
+        ]))
+        story.append(pt)
+        story.append(Spacer(1, 20))
+
+        # Disclaimer
+        disc_style = ParagraphStyle('Disc', parent=styles['Normal'], fontSize=8, textColor=colors.HexColor('#94a3b8'))
+        story.append(Paragraph(
+            "<i>Disclaimer: This report is generated by an AI assistant for educational and informational purposes only. "
+            "It is not an official medical diagnosis. Please consult a licensed medical professional for medical concerns.</i>",
+            disc_style
+        ))
+        doc.build(story)
+
+    except Exception as e:
+        print(f"ReportLab PDF generation fallback triggered: {e}")
+        with open(file_path, "w", encoding="utf-8") as f:
+            patient_name = user.get("full_name") or user.get("name", "Patient")
+            f.write(f"AI Medical Symptom Assistant Report\n")
+            f.write(f"Patient: {patient_name} ({user.get('email', '')})\n")
+            f.write(f"Symptoms: {', '.join(assessment.get('symptoms', []))}\n")
+            f.write("Predictions:\n")
+            for p in predictions:
+                if isinstance(p, dict):
+                    f.write(f"- {p.get('disease', 'Unknown')}: {p.get('probability', 0)}\n")
+
+
+@router.post("", summary="Generate PDF Report for Assessment")
+async def generate_report(
+    body: ReportGenerateRequest,
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_mongodb)
+):
+    user_id = str(current_user["id"])
+
+    # Fetch assessment, validate ownership
+    query = {"user_id": user_id}
+    if ObjectId.is_valid(body.assessment_id):
+        query["_id"] = ObjectId(body.assessment_id)
+    else:
+        query["_id"] = body.assessment_id
+
+    assessment = db.assessments.find_one(query)
+    if not assessment:
+        raise HTTPException(status_code=404, detail="Assessment record not found.")
+
+    ass_id_str = str(assessment["_id"])
+
+    # Fetch predictions
+    pred_doc = db.predictions.find_one({"assessment_id": ass_id_str})
+    predictions = pred_doc.get("top_3_conditions", []) if pred_doc else []
+
+    # Build file path
+    reports_dir = os.path.abspath(
+        os.path.join(os.path.dirname(__file__), "..", "..", "..", "reports")
+    )
+    os.makedirs(reports_dir, exist_ok=True)
+    filename = f"report_{ass_id_str}.pdf"
+    file_path = os.path.join(reports_dir, filename)
+
+    generate_pdf_file(assessment, predictions, current_user, file_path)
+
+    # Upsert Report record in MongoDB
+    existing = db.reports.find_one({"assessment_id": ass_id_str, "user_id": user_id})
+    if existing:
+        report_id = str(existing["_id"])
+    else:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        res = db.reports.insert_one({
+            "user_id": user_id,
+            "assessment_id": ass_id_str,
+            "file_path": file_path,
+            "filename": filename,
+            "created_at": now_iso,
+        })
+        report_id = str(res.inserted_id)
+
+    return {
+        "report_id": report_id,
+        "assessment_id": ass_id_str,
+        "filename": filename,
+        "download_url": f"/api/reports/{report_id}/pdf",
+        "message": "Report generated successfully."
+    }
+
+
+@router.get("/{report_id}/pdf", summary="Download / View PDF Report")
+async def get_report_pdf(
+    report_id: str,
+    current_user: dict = Depends(get_current_user),
+    db = Depends(get_mongodb)
+):
+    user_id = str(current_user["id"])
+
+    query = {}
+    if ObjectId.is_valid(report_id):
+        query["_id"] = ObjectId(report_id)
+    else:
+        query["_id"] = report_id
+
+    report_obj = db.reports.find_one(query)
+    if not report_obj:
+        raise HTTPException(status_code=404, detail="Report not found.")
+
+    # Ownership check
+    if report_obj.get("user_id") != user_id and current_user.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access denied. You can only access your own health reports."
+        )
+
+    file_path = report_obj.get("file_path", "")
+    if not file_path or not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Report PDF file not found on disk.")
+
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=os.path.basename(file_path)
+    )

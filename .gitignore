@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+env/
+.env
+*.log
+
+# Node / React
+node_modules/
+dist/
+.DS_Store
+*.local
+
+# Environment files
+.env
+.env.local
+.env.production
+.dev.vars
+backend/.env
+frontend/.env.local
+
+# ML Models (large files)
+ml/saved_models/*.pkl
+ml/saved_models/*.joblib
+
+# Reports (user-generated)
+reports/*.pdf
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Database
+*.db
+*.sqlite3
+
+# OS
+Thumbs.db

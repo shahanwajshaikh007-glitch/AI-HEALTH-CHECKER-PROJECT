@@ -1,0 +1,21 @@
+{
+  "name": "cloudflare-backend",
+  "version": "1.0.0",
+  "description": "Cloudflare Workers + D1 Backend for AI Health Checker",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787 --persist-to .wrangler/state",
+    "db:setup": "wrangler d1 execute ai_health_checker --local --file=./schema.sql",
+    "db:seed": "wrangler d1 execute ai_health_checker --local --file=./seed.sql",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "hono": "^4.6.14",
+    "jspdf": "^2.5.2"
+  },
+  "devDependencies": {
+    "wrangler": "^4.131.1"
+  }
+}
