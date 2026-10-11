@@ -27,7 +27,7 @@ app.use('*', cors({
     }
     try {
       const parsed = new URL(origin);
-      if (parsed.hostname.endsWith('.pages.dev')) {
+      if (parsed.hostname.endsWith('.pages.dev') || parsed.hostname.endsWith('.workers.dev')) {
         return origin;
       }
     } catch (e) {
