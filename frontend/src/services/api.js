@@ -4,6 +4,8 @@
  * automatic JWT bearer authorization header injection, and global 401 interceptor.
  */
 
+import axios from 'axios';
+
 // Dynamic Base URL: Production Cloudflare Workers API online vs Local Worker (8787)
 const isProduction =
   typeof window !== 'undefined' &&
